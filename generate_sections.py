@@ -51,6 +51,7 @@ class AssignedArm:
 class ReplacementResult:
     override_replacements: int
     rendered_replacements: int
+    block_attribute_replacements: int
     missing_placeholders: list[str]
     non_numeric_dimension_values: list[str]
 
@@ -141,14 +142,6 @@ def read_arm_polylines(path: Path) -> list[ArmPolyline]:
     return arms
 
 
-def group_pole_pairs(poles: list[Pole]) -> list[tuple[Pole, Pole]]:
-    sorted_poles = sorted(poles, key=lambda pole: pole.pole_number)
-    pairs: list[tuple[Pole, Pole]] = []
-    for index in range(0, len(sorted_poles) - 1, 2):
-        pairs.append((sorted_poles[index], sorted_poles[index + 1]))
-    return pairs
-
-
 def nearest_pole(arm: ArmPolyline, poles: Iterable[Pole]) -> Pole:
     return min(
         poles,
@@ -178,15 +171,16 @@ def assignment_distance_xy(assignment: AssignedArm) -> float:
     )
 
 
-def build_values_for_pair(pair: tuple[Pole, Pole], assignments: list[AssignedArm]) -> dict[str, str | int]:
-    left_pole, right_pole = pair
-    pair_poles = {left_pole.pole_number, right_pole.pole_number}
-    values: dict[str, str | int] = {"POLE_NUM": f"{left_pole.pole_number}-{right_pole.pole_number}"}
+def build_values_for_pole(pole: Pole, assignments: list[AssignedArm]) -> dict[str, str | int]:
+    values: dict[str, str | int] = {
+        "POLE_NUM": pole.pole_number,
+        "POLE_NAME": pole.pole_number,
+    }
 
     grouped_by_layer: dict[str, list[AssignedArm]] = defaultdict(list)
     grouped_by_layer_and_side: dict[tuple[str, str], list[AssignedArm]] = defaultdict(list)
     for assignment in assignments:
-        if assignment.pole.pole_number in pair_poles:
+        if assignment.pole.pole_number == pole.pole_number:
             grouped_by_layer[assignment.arm.layer].append(assignment)
             grouped_by_layer_and_side[(assignment.arm.layer, assignment.side)].append(assignment)
 
@@ -211,9 +205,8 @@ def build_values_for_pair(pair: tuple[Pole, Pole], assignments: list[AssignedArm
     return values
 
 
-def output_filename_for_pair(pair: tuple[Pole, Pole]) -> str:
-    left_pole, right_pole = pair
-    return f"POLE_{left_pole.pole_number}-{right_pole.pole_number}_SECTION.dxf"
+def output_filename_for_pole(pole: Pole) -> str:
+    return f"POLE_{pole.pole_number}_SECTION.dxf"
 
 
 def missing_arm_problems(values: dict[str, str | int]) -> list[str]:
@@ -259,11 +252,37 @@ def replace_rendered_dimension_block_text(doc, dim, dimension_id: str, value: st
     return replacements
 
 
+def is_as_made_text(value: str) -> bool:
+    normalized = value.strip().upper().replace("-", " ")
+    return normalized.startswith("AS MADE")
+
+
+def replace_block_attribute_text(doc, block_name: str, attribute_tag: str, value: str) -> int:
+    replacements = 0
+    block_name_upper = block_name.upper()
+    attribute_tag_upper = attribute_tag.upper()
+
+    for layout in doc.layouts:
+        for insert in layout.query("INSERT"):
+            if insert.dxf.name.upper() != block_name_upper:
+                continue
+
+            for attrib in insert.attribs:
+                if attrib.dxf.tag.upper() == attribute_tag_upper:
+                    current_text = attrib.dxf.text or ""
+                    if is_as_made_text(current_text):
+                        attrib.dxf.text = value
+                        replacements += 1
+
+    return replacements
+
+
 def replace_dimension_text(template_path: Path, output_path: Path, values: dict[str, str | int]) -> ReplacementResult:
     doc = ezdxf.readfile(template_path)
     msp = doc.modelspace()
     override_replacements = 0
     rendered_replacements = 0
+    block_attribute_replacements = 0
     replaced_placeholders: set[str] = set()
     non_numeric_dimension_values: list[str] = []
 
@@ -278,12 +297,21 @@ def replace_dimension_text(template_path: Path, output_path: Path, values: dict[
             rendered_replacements += replace_rendered_dimension_block_text(doc, dim, placeholder, value)
             replaced_placeholders.add(placeholder)
 
+    if "POLE_NUM" in values:
+        block_attribute_replacements = replace_block_attribute_text(
+            doc,
+            "ANOT0",
+            "TEXT",
+            f"AS MADE _ POLE NUMBER {values['POLE_NUM']}",
+        )
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.saveas(output_path)
     missing_placeholders = [placeholder for placeholder in values if placeholder not in replaced_placeholders]
     return ReplacementResult(
         override_replacements=override_replacements,
         rendered_replacements=rendered_replacements,
+        block_attribute_replacements=block_attribute_replacements,
         missing_placeholders=missing_placeholders,
         non_numeric_dimension_values=non_numeric_dimension_values,
     )
@@ -319,12 +347,26 @@ def write_run_report(
     report_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def generate_sections(debug: bool = False, limit: int | None = None) -> None:
+def generate_sections(
+    debug: bool = False,
+    limit: int | None = None,
+    survey_file: str | Path = SURVEY_FILE,
+    poles_file: str | Path = POLES_FILE,
+    templates_dir: str | Path = TEMPLATES_DIR,
+    output_dir: str | Path = OUTPUT_DIR,
+    section_templates: dict[str, str] | None = None,
+) -> None:
+    survey_file = Path(survey_file)
+    poles_file = Path(poles_file)
+    templates_dir = Path(templates_dir)
+    output_dir = Path(output_dir)
+    section_templates = section_templates or SECTION_TEMPLATES
+
     started_at = datetime.now()
-    poles = read_poles(POLES_FILE)
-    arms = read_arm_polylines(SURVEY_FILE)
+    poles = read_poles(poles_file)
+    arms = read_arm_polylines(survey_file)
     assignments = assign_arms_to_poles(arms, poles)
-    pairs = group_pole_pairs(poles)
+    section_poles = sorted(poles, key=lambda pole: pole.pole_number)
     section_reports: list[tuple[str, list[str]]] = []
 
     if debug:
@@ -338,27 +380,26 @@ def generate_sections(debug: bool = False, limit: int | None = None) -> None:
             print(f"ASSIGN {assignment.arm.handle}: pole={assignment.pole.pole_number} side={assignment.side}")
 
     generated = 0
-    for pair in pairs[:limit]:
-        left_pole, right_pole = pair
-        section_name = f"{left_pole.pole_number}-{right_pole.pole_number}"
+    for pole in section_poles[:limit]:
+        section_name = pole.pole_number
         problems: list[str] = []
-        template_name = SECTION_TEMPLATES.get(left_pole.section_type)
+        template_name = section_templates.get(pole.section_type)
         if not template_name:
-            problems.append(f"TEMPLATE MISSING: no template configured for section_type {left_pole.section_type}")
+            problems.append(f"TEMPLATE MISSING: no template configured for section_type {pole.section_type}")
             section_reports.append((section_name, problems))
-            print(f"Skipping {section_name}: no template for section_type {left_pole.section_type}")
+            print(f"Skipping {section_name}: no template for section_type {pole.section_type}")
             continue
 
-        template_path = TEMPLATES_DIR / template_name
+        template_path = templates_dir / template_name
         if not template_path.exists():
             problems.append(f"TEMPLATE FILE MISSING: {template_path}")
             section_reports.append((section_name, problems))
             print(f"Skipping {section_name}: missing template {template_path}")
             continue
 
-        values = build_values_for_pair(pair, assignments)
+        values = build_values_for_pole(pole, assignments)
         problems.extend(missing_arm_problems(values))
-        output_path = OUTPUT_DIR / output_filename_for_pair(pair)
+        output_path = output_dir / output_filename_for_pole(pole)
 
         # Copy first so the output is a template-derived file even if future metadata is added before replacement.
         shutil.copyfile(template_path, output_path)
@@ -367,6 +408,8 @@ def generate_sections(debug: bool = False, limit: int | None = None) -> None:
             problems.append(f"DIMENSION ID MISSING IN TEMPLATE: {placeholder}")
         for value in replacement_result.non_numeric_dimension_values:
             problems.append(f"DIMENSION NOT A NUMBER: {value}")
+        if replacement_result.block_attribute_replacements == 0:
+            problems.append("BLOCK ATTRIBUTE MISSING: block ANOT0 attribute TEXT was not found for pole number")
         generated += 1
         section_reports.append((section_name, problems))
 
@@ -375,24 +418,36 @@ def generate_sections(debug: bool = False, limit: int | None = None) -> None:
             print(
                 f"WROTE {output_path} "
                 f"({replacement_result.override_replacements} dimension overrides, "
-                f"{replacement_result.rendered_replacements} rendered text replacements)"
+                f"{replacement_result.rendered_replacements} rendered text replacements, "
+                f"{replacement_result.block_attribute_replacements} ANOT0 TEXT attribute replacements)"
             )
 
     ended_at = datetime.now()
-    report_path = OUTPUT_DIR / f"run_report_{started_at.strftime('%Y%m%d_%H%M%S')}.txt"
+    report_path = output_dir / f"run_report_{started_at.strftime('%Y%m%d_%H%M%S')}.txt"
     write_run_report(report_path, started_at, ended_at, section_reports)
 
-    print(f"Generated {generated} section DXF file(s) in {OUTPUT_DIR}")
+    print(f"Generated {generated} section DXF file(s) in {output_dir}")
     print(f"Wrote run report: {report_path}")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate railway pole section DXF drawings from survey measurements.")
     parser.add_argument("--debug", action="store_true", help="Print loaded poles, measured arms, assignments, and output values.")
-    parser.add_argument("--limit", type=int, default=None, help="Generate only the first N pole pairs.")
+    parser.add_argument("--limit", type=int, default=None, help="Generate only the first N poles.")
+    parser.add_argument("--survey", default=str(SURVEY_FILE), help="Survey DXF path.")
+    parser.add_argument("--poles", default=str(POLES_FILE), help="Poles Excel path.")
+    parser.add_argument("--templates-dir", default=str(TEMPLATES_DIR), help="Folder containing template DXF files.")
+    parser.add_argument("--output-dir", default=str(OUTPUT_DIR), help="Folder where output DXF and report files are written.")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    generate_sections(debug=args.debug, limit=args.limit)
+    generate_sections(
+        debug=args.debug,
+        limit=args.limit,
+        survey_file=args.survey,
+        poles_file=args.poles,
+        templates_dir=args.templates_dir,
+        output_dir=args.output_dir,
+    )

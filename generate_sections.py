@@ -52,6 +52,7 @@ class ReplacementResult:
     override_replacements: int
     rendered_replacements: int
     block_attribute_replacements: int
+    table_cell_replacements: int
     missing_placeholders: list[str]
     non_numeric_dimension_values: list[str]
 
@@ -171,6 +172,11 @@ def assignment_distance_xy(assignment: AssignedArm) -> float:
     )
 
 
+def format_length_meters(length_mm: int) -> str:
+    value = length_mm / 1000
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
 def build_values_for_pole(pole: Pole, assignments: list[AssignedArm]) -> dict[str, str | int]:
     values: dict[str, str | int] = {
         "POLE_NUM": pole.pole_number,
@@ -189,19 +195,19 @@ def build_values_for_pole(pole: Pole, assignments: list[AssignedArm]) -> dict[st
         if len(placeholders) == 1:
             candidates = sorted(grouped_by_layer.get(layer, []), key=assignment_distance_xy)
             if candidates:
-                values[placeholders[0]] = candidates[0].arm.length_mm
+                values[placeholders[0]] = format_length_meters(candidates[0].arm.length_mm)
             continue
 
         left_placeholder, right_placeholder = placeholders[:2]
         for side, placeholder in (("L", left_placeholder), ("R", right_placeholder)):
             candidates = sorted(grouped_by_layer_and_side.get((layer, side), []), key=assignment_distance_xy)
             if candidates:
-                values[placeholder] = candidates[0].arm.length_mm
+                values[placeholder] = format_length_meters(candidates[0].arm.length_mm)
 
         for extra_index, placeholder in enumerate(placeholders[2:], start=2):
             candidates = sorted(grouped_by_layer.get(layer, []), key=assignment_distance_xy)
             if len(candidates) > extra_index:
-                values[placeholder] = candidates[extra_index].arm.length_mm
+                values[placeholder] = format_length_meters(candidates[extra_index].arm.length_mm)
     return values
 
 
@@ -277,12 +283,84 @@ def replace_block_attribute_text(doc, block_name: str, attribute_tag: str, value
     return replacements
 
 
-def replace_dimension_text(template_path: Path, output_path: Path, values: dict[str, str | int]) -> ReplacementResult:
+def replace_text_entity_from_values(entity, values: dict[str, str | int]) -> str | None:
+    if entity.dxftype() not in {"TEXT", "MTEXT"}:
+        return None
+
+    cell_key = entity_text(entity).strip()
+    if cell_key not in values:
+        return None
+
+    set_entity_text(entity, str(values[cell_key]))
+    return cell_key
+
+
+def replace_table_cell_text(
+    doc,
+    values: dict[str, str | int],
+    explode_table: bool = True,
+    replaced_placeholders: set[str] | None = None,
+) -> int:
+    replacements = 0
+    msp = doc.modelspace()
+    for table in list(msp.query("ACAD_TABLE")):
+        block_name = table.dxf.get("geometry")
+        if not block_name or block_name not in doc.blocks:
+            continue
+
+        block = doc.blocks[block_name]
+        for entity in block:
+            cell_key = replace_text_entity_from_values(entity, values)
+            if cell_key is not None:
+                if replaced_placeholders is not None:
+                    replaced_placeholders.add(cell_key)
+                replacements += 1
+
+        if explode_table:
+            # AutoCAD often displays ACAD_TABLE from its cached proxy graphic, not from
+            # the edited anonymous table block. Convert that proxy graphic into normal
+            # visible DXF entities so the table shown on screen matches the values.
+            for virtual_entity in table.proxy_graphic_content():
+                entity = virtual_entity.copy()
+                cell_key = replace_text_entity_from_values(entity, values)
+                if cell_key is not None and replaced_placeholders is not None:
+                    replaced_placeholders.add(cell_key)
+                msp.add_entity(entity)
+
+            msp.delete_entity(table)
+
+    # If the template table was manually exploded before running this tool, there
+    # is no ACAD_TABLE left. The visible cells are plain TEXT/MTEXT in modelspace.
+    for entity in msp.query("TEXT MTEXT"):
+        cell_key = replace_text_entity_from_values(entity, values)
+        if cell_key is not None:
+            if replaced_placeholders is not None:
+                replaced_placeholders.add(cell_key)
+            replacements += 1
+
+    return replacements
+
+
+def is_numeric_value(value: str) -> bool:
+    try:
+        float(value)
+    except ValueError:
+        return False
+    return True
+
+
+def replace_dimension_text(
+    template_path: Path,
+    output_path: Path,
+    values: dict[str, str | int],
+    explode_tables: bool = True,
+) -> ReplacementResult:
     doc = ezdxf.readfile(template_path)
     msp = doc.modelspace()
     override_replacements = 0
     rendered_replacements = 0
     block_attribute_replacements = 0
+    table_cell_replacements = 0
     replaced_placeholders: set[str] = set()
     non_numeric_dimension_values: list[str] = []
 
@@ -290,7 +368,7 @@ def replace_dimension_text(template_path: Path, output_path: Path, values: dict[
         placeholder = (dim.dxf.text or "").strip()
         if placeholder in values:
             value = str(values[placeholder])
-            if placeholder != "POLE_NUM" and not value.isdecimal():
+            if placeholder not in {"POLE_NUM", "POLE_NAME"} and not is_numeric_value(value):
                 non_numeric_dimension_values.append(f"{placeholder}={value}")
             dim.dxf.text = value
             override_replacements += 1
@@ -305,6 +383,13 @@ def replace_dimension_text(template_path: Path, output_path: Path, values: dict[
             f"AS MADE _ POLE NUMBER {values['POLE_NUM']}",
         )
 
+    table_cell_replacements = replace_table_cell_text(
+        doc,
+        values,
+        explode_table=explode_tables,
+        replaced_placeholders=replaced_placeholders,
+    )
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.saveas(output_path)
     missing_placeholders = [placeholder for placeholder in values if placeholder not in replaced_placeholders]
@@ -312,6 +397,7 @@ def replace_dimension_text(template_path: Path, output_path: Path, values: dict[
         override_replacements=override_replacements,
         rendered_replacements=rendered_replacements,
         block_attribute_replacements=block_attribute_replacements,
+        table_cell_replacements=table_cell_replacements,
         missing_placeholders=missing_placeholders,
         non_numeric_dimension_values=non_numeric_dimension_values,
     )
@@ -355,6 +441,7 @@ def generate_sections(
     templates_dir: str | Path = TEMPLATES_DIR,
     output_dir: str | Path = OUTPUT_DIR,
     section_templates: dict[str, str] | None = None,
+    explode_tables: bool = True,
 ) -> None:
     survey_file = Path(survey_file)
     poles_file = Path(poles_file)
@@ -403,7 +490,7 @@ def generate_sections(
 
         # Copy first so the output is a template-derived file even if future metadata is added before replacement.
         shutil.copyfile(template_path, output_path)
-        replacement_result = replace_dimension_text(output_path, output_path, values)
+        replacement_result = replace_dimension_text(output_path, output_path, values, explode_tables=explode_tables)
         for placeholder in replacement_result.missing_placeholders:
             problems.append(f"DIMENSION ID MISSING IN TEMPLATE: {placeholder}")
         for value in replacement_result.non_numeric_dimension_values:
@@ -419,7 +506,8 @@ def generate_sections(
                 f"WROTE {output_path} "
                 f"({replacement_result.override_replacements} dimension overrides, "
                 f"{replacement_result.rendered_replacements} rendered text replacements, "
-                f"{replacement_result.block_attribute_replacements} ANOT0 TEXT attribute replacements)"
+                f"{replacement_result.block_attribute_replacements} ANOT0 TEXT attribute replacements, "
+                f"{replacement_result.table_cell_replacements} table cell replacements)"
             )
 
     ended_at = datetime.now()
@@ -438,6 +526,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--poles", default=str(POLES_FILE), help="Poles Excel path.")
     parser.add_argument("--templates-dir", default=str(TEMPLATES_DIR), help="Folder containing template DXF files.")
     parser.add_argument("--output-dir", default=str(OUTPUT_DIR), help="Folder where output DXF and report files are written.")
+    parser.add_argument(
+        "--keep-acad-table",
+        action="store_true",
+        help="Keep ACAD_TABLE objects instead of converting them to visible TEXT/LINE geometry.",
+    )
     return parser.parse_args()
 
 
@@ -450,4 +543,5 @@ if __name__ == "__main__":
         poles_file=args.poles,
         templates_dir=args.templates_dir,
         output_dir=args.output_dir,
+        explode_tables=not args.keep_acad_table,
     )

@@ -1,0 +1,35 @@
+Section Drawing Generator Run Report
+Started: 2026-06-08T20:39:11
+Ended:   2026-06-08T20:39:11
+Timespan: 0:00:00.413416
+
+[1]
+- LINE MISSING: no closest polyline value found for layer canti_7_4, placeholder canti_7_4
+- LINE MISSING: no closest polyline value found for layer canti_7_5, placeholder canti_7_5
+- LINE MISSING: no closest polyline value found for layer canti_7_6, placeholder canti_7_6
+- LINE MISSING: no closest polyline value found for layer cw_stagger, placeholder cw_stagger
+- DIMENSION ID MISSING IN TEMPLATE: POLE_NUM
+- DIMENSION ID MISSING IN TEMPLATE: POLE_NAME
+
+[2]
+- TEMPLATE MISSING: no template configured for section_type TYPE2
+
+[3]
+- LINE MISSING: no closest polyline value found for layer canti_7_5, placeholder canti_7_5
+- LINE MISSING: no closest polyline value found for layer canti_7_6, placeholder canti_7_6
+- LINE MISSING: no closest polyline value found for layer cw_stagger, placeholder cw_stagger
+- DIMENSION ID MISSING IN TEMPLATE: POLE_NUM
+- DIMENSION ID MISSING IN TEMPLATE: POLE_NAME
+
+[4]
+- TEMPLATE MISSING: no template configured for section_type TYPE2
+
+[5]
+- TEMPLATE MISSING: no template configured for section_type TYPE3
+
+[6]
+- LINE MISSING: no closest polyline value found for layer canti_7_5, placeholder canti_7_5
+- LINE MISSING: no closest polyline value found for layer canti_7_6, placeholder canti_7_6
+- LINE MISSING: no closest polyline value found for layer cw_stagger, placeholder cw_stagger
+- DIMENSION ID MISSING IN TEMPLATE: POLE_NUM
+- DIMENSION ID MISSING IN TEMPLATE: POLE_NAME

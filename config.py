@@ -9,20 +9,21 @@ OUTPUT_DIR = BASE_DIR / "output"
 
 # Map: layer name in survey DXF -> placeholder IDs (left, right)
 ARM_LAYERS = {
-    "CANTI_L": ("CANTI_L"),
-    "CANTI_R": ("CANTI_R"),
-    
-    "CANTI_L_2": ("CANTI_L_2"),
-    "CANTI_R_2": ("CANTI_R_2"),
+    "canti_7_1": ("canti_7_1"),
+    "canti_7_2": ("canti_7_2"),
+    "canti_7_3": ("canti_7_3"),
+    "canti_7_4": ("canti_7_4"),
+    "canti_7_5": ("canti_7_5"),
+    "canti_7_6": ("canti_7_6"), 
+    "canti_H": ("canti_H"),
+    "cw_hight": ("cw_hight"),
+    "pole_rail": ("pole_rail"),
+    "PRM": ("PRM"),
+    "sys_H": ("sys_H"),
+    "cw_stagger": ("cw_stagger"),
+    "Soil_l": ("Soil_l"),
+    "Mes_p": ("Mes_p"),
 
-    "CW_L": ("CW_L"),
-    "CW_R": ("CW_R"),
-
-    "RW_L": ("RW_L"),
-    "RW_R": ("RW_R"),
-
-    "MW_L": ("MW_L"),
-    "MW_R": ("MW_R"),
 }
 
 # Map: section_type value in Excel -> template filename
@@ -31,5 +32,5 @@ SECTION_TEMPLATES = {
     "TYPE2": "template_TYPE2.dxf",
 }
 
-# DXF survey units are meters; output dimension text is millimeters.
+# DXF survey units are meters. Measured output text is formatted in meters.
 SURVEY_TO_OUTPUT_UNITS = 1000
